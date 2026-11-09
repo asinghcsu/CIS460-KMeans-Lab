@@ -19,6 +19,7 @@
   let blobs = makeBlobs();
   let data, state, history = [], selected = 0, playing = false, timer = null, focusAfterRender = null;
   let runLog = [], blobVersion = 0;
+  let animateStep = false, activeTask = null;
   const elbowCache = new Map();
 
   function makeBlobs() {
@@ -73,12 +74,18 @@
   function reset({ keepStart = false } = {}) {
     stop();
     loadData();
-    const indices = keepStart && state ? state.startIdx : startIndices();
+    const earlier = keepStart && state ? state : null;
+    // For k-means++ the random numbers are stored, so Reset and Replay repeat the same draws.
+    const seedPlan = cfg.start !== "kpp" ? null : (earlier && earlier.seedPlan) || {
+      first: Math.floor(Math.random() * data.X.length),
+      draws: Array.from({ length: cfg.k - 1 }, () => Math.random()),
+    };
+    const indices = seedPlan ? [seedPlan.first] : earlier ? earlier.startIdx : startIndices();
     state = {
-      phase: "init", iteration: 0, startIdx: indices,
+      phase: seedPlan ? "seed" : "init", iteration: 0, startIdx: indices.slice(), seedPlan, lastDraw: null,
       centers: indices.map((i) => data.X[i].slice()),
       previous: null, labels: data.X.map(() => -1),
-      changed: null, shift: null, trace: [],
+      changed: null, shift: null, trace: [], justChanged: [],
     };
     history = [];
     selected = 0;
@@ -92,8 +99,17 @@
   function advance() {
     if (state.phase === "converged") return;
     history.push(snapshot(state));
+    animateStep = true;
+    state.justChanged = [];
     const { X } = data;
-    if (state.phase === "init") {
+    if (state.phase === "seed") {
+      const { probs } = KM.seedState(X, state.startIdx);
+      const pick = KM.pickSeed(probs, state.seedPlan.draws[state.centers.length - 1]);
+      state.startIdx.push(pick);
+      state.centers.push(X[pick].slice());
+      state.lastDraw = { point: pick, prob: probs[pick] };
+      if (state.centers.length === cfg.k) state.phase = "init";
+    } else if (state.phase === "init") {
       state.labels = KM.assign(X, state.centers);
       state.changed = X.length;
       state.iteration = 1;
@@ -107,7 +123,8 @@
       state.trace.push(KM.inertia(X, state.centers, state.labels));
     } else {
       const next = KM.assign(X, state.centers);
-      state.changed = next.filter((v, i) => v !== state.labels[i]).length;
+      state.justChanged = next.flatMap((v, i) => (v !== state.labels[i] ? [i] : []));
+      state.changed = state.justChanged.length;
       state.labels = next;
       state.previous = null;
       if (state.changed === 0) {
@@ -151,7 +168,16 @@
   function togglePlay() { if (playing) stop(); else play(); }
 
   function currentInertia() {
-    return state.phase === "init" ? null : KM.inertia(data.X, state.centers, state.labels);
+    return state.labels[0] < 0 ? null : KM.inertia(data.X, state.centers, state.labels);
+  }
+
+  function pct(p) {
+    return `${(p * 100).toFixed(p > 0 && p < 0.01 ? 2 : 1)}%`;
+  }
+
+  function drawSentence() {
+    const d = state.lastDraw;
+    return d ? `The last draw selected ${data.ids[d.point]}, which had a ${pct(d.prob)} chance.` : "";
   }
 
   function currentAri() {
@@ -237,18 +263,54 @@
     renderPhases();
     renderExplanation();
     renderInspector();
+    renderFocus();
     renderMeans();
     renderTable();
     renderLegend();
     syncTransport();
+    renderTaskSteps();
+    if (animateStep && state.labels[0] >= 0) {
+      const label = $("inertiaLabel");
+      label.classList.remove("flash");
+      void label.offsetWidth; // restarts the animation
+      label.classList.add("flash");
+    }
+    animateStep = false;
+  }
+
+  function renderFocus() {
+    const i = selected, id = data.ids[i], p = data.X[i];
+    let text = "";
+    if (state.phase === "seed") {
+      text = $("verdict").textContent;
+    } else if (state.phase === "assign") {
+      const d = state.centers.map((c) => KM.dist(p, c));
+      const best = d.indexOf(Math.min(...d));
+      text = `Point ${id}: distances ${d.map(fmt).join(", ")}. The smallest is ${fmt(d[best])}, so it joins C${best + 1}.`;
+    } else if (state.phase === "update") {
+      const moves = state.centers.map((c, j) => KM.dist(c, state.previous[j]));
+      const j = moves.indexOf(Math.max(...moves));
+      const idx = data.X.map((_, n) => n).filter((n) => state.labels[n] === j);
+      const parts = state.centers[j].map((_, f) => `${fmt(idx.reduce((s, n) => s + data.X[n][f], 0))} / ${idx.length}`);
+      text = idx.length
+        ? `C${j + 1} moved the most, by ${fmt(moves[j])}: (${parts.join(", ")}) = (${state.centers[j].map(fmt).join(", ")}).`
+        : "";
+    } else if (state.phase === "converged") {
+      text = `Final inertia: ${fmt(currentInertia())}.`;
+    }
+    $("focusCalc").hidden = !text;
+    $("focusText").textContent = text;
   }
 
   function renderPlot() {
     const svg = $("plot");
     svg.replaceChildren();
-    const compact = compactQuery.matches;
-    const W = compact ? 360 : 720;
-    const H = data.oneD ? (compact ? 260 : 290) : compact ? 400 : 470;
+    const present = document.body.classList.contains("present");
+    const compact = compactQuery.matches && !present;
+    const box = present ? svg.getBoundingClientRect() : null;
+    const W = present ? 620 : compact ? 360 : 720;
+    const H = present ? Math.round(620 * Math.max(0.42, box.height / Math.max(box.width, 1)))
+      : data.oneD ? (compact ? 260 : 360) : compact ? 400 : 470;
     const m = compact ? { l: 44, r: 14, t: 16, b: 46 } : { l: 58, r: 24, t: 16, b: 50 };
     svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
     const pw = W - m.l - m.r, ph = H - m.t - m.b, base = m.t + ph;
@@ -257,7 +319,7 @@
     const sx = (v) => m.l + ((v - xDom[0]) / (xDom[1] - xDom[0])) * pw;
     let sy, yTicks = [];
     if (data.oneD) {
-      const rise = Math.min(44, (ph - 30) / (Math.max(...data.levels) + 1));
+      const rise = Math.min(70, (ph - 30) / (Math.max(...data.levels) + 1));
       sy = (_, level) => (level === undefined ? base : base - rise * (level + 1) - 6);
     } else {
       const yDom = extent(data.X.map((p) => p[1]));
@@ -291,10 +353,10 @@
     const py = (i) => (data.oneD ? sy(0, data.levels[i]) : sy(data.X[i][1]));
     const cy = (c) => (data.oneD ? base : sy(c[1]));
 
-    if (state.phase !== "init" && data.labelled) {
+    if (state.labels[0] >= 0 && data.labelled) {
       data.X.forEach((p, i) => {
         const c = state.centers[state.labels[i]];
-        svg.appendChild(el("line", { x1: px(p), y1: py(i), x2: sx(c[0]), y2: cy(c), class: `link c${state.labels[i]}` }));
+        svg.appendChild(el("line", { x1: px(p), y1: py(i), x2: sx(c[0]), y2: cy(c), class: `link c${state.labels[i]}${state.phase === "update" ? " dim" : ""}` }));
       });
     }
 
@@ -306,11 +368,19 @@
       });
     }
 
-    const r = data.labelled ? 7 : 4;
+    const seedInfo = state.phase === "seed" ? KM.seedState(data.X, state.startIdx) : null;
+    const maxProb = seedInfo ? Math.max(...seedInfo.probs) : 1;
+    // Fade everything that did not change in this step, so the eye goes to what did.
+    const changedNow = new Set(state.justChanged);
     data.X.forEach((p, i) => {
       const cluster = state.labels[i];
       const x = px(p), y = py(i);
-      const g = el("g", { class: `pt ${cluster >= 0 ? `c${cluster}` : "unassigned"}`, "data-i": i, "data-tip": tipFor(i) });
+      // While seeding, marker area shows the chance of being chosen next.
+      const grow = seedInfo ? Math.sqrt(seedInfo.probs[i] / maxProb) : 0;
+      const r = seedInfo ? (data.labelled ? 4 + 11 * grow : 2 + 7 * grow) : data.labelled ? 7 : 4;
+      const stateClass = seedInfo ? "seed" : cluster >= 0 ? `c${cluster}` : "unassigned";
+      const faded = i !== selected && (state.phase === "update" || (changedNow.size > 0 && !changedNow.has(i)));
+      const g = el("g", { class: `pt ${stateClass}${faded ? " dim" : ""}`, "data-i": i, "data-tip": tipFor(i) });
       if (data.labelled) {
         g.setAttribute("tabindex", "0");
         g.setAttribute("role", "button");
@@ -318,10 +388,18 @@
       }
       g.appendChild(el("circle", { cx: x, cy: y, r: data.labelled ? 16 : 7, class: "hit" }));
       g.appendChild(el("path", { d: shapePath(cluster < 0 ? 0 : cluster, x, y, r), class: "mark" }));
-      if (selected === i) g.appendChild(el("circle", { cx: x, cy: y, r: r + 6, class: "select-ring" }));
+      if (selected === i) g.appendChild(el("circle", { cx: x, cy: y, r: r + 5, class: "select-ring" }));
+      if (changedNow.has(i)) g.appendChild(el("circle", { cx: x, cy: y, r: r + 8, class: "change-ring" }));
       g.appendChild(el("circle", { cx: x, cy: y, r: r + 9, class: "select-ring-focus", fill: "none" }));
       svg.appendChild(g);
-      if (data.labelled) svg.appendChild(el("text", { x: x + 10, y: y - 9, class: "pt-label" }, data.ids[i]));
+      if (data.labelled) {
+        const showChance = seedInfo && !state.startIdx.includes(i);
+        // Labels near the right edge sit above the point, so they are not cut off.
+        const place = showChance && x > W - 72
+          ? { x: W - 2, y: y - r - 5, "text-anchor": "end" }
+          : { x: x + 6 + r * 0.6, y: y - 5 - r * 0.6 };
+        svg.appendChild(el("text", { ...place, class: "pt-label" }, showChance ? `${data.ids[i]} ${pct(seedInfo.probs[i])}` : data.ids[i]));
+      }
     });
 
     state.centers.forEach((c, j) => {
@@ -349,23 +427,26 @@
 
   function tipFor(i) {
     const cluster = state.labels[i];
-    return `${data.ids[i]}: ${describe(i)}${cluster >= 0 ? `; cluster ${cluster + 1}` : ""}`;
+    const chance = state.phase === "seed" ? `; chance ${pct(KM.seedState(data.X, state.startIdx).probs[i])}` : "";
+    return `${data.ids[i]}: ${describe(i)}${cluster >= 0 ? `; cluster ${cluster + 1}` : ""}${chance}`;
   }
 
   function renderLegend() {
     const parts = state.centers.map((_, j) => `<span>${swatch(j)} Cluster ${j + 1}</span>`);
     parts.push(`<span><svg width="16" height="16" viewBox="0 0 30 30" aria-hidden="true"><polygon points="${starPoints(15, 15, 14, 6.5)}" fill="#fff" stroke="#15201b" stroke-width="2"/></svg> Center</span>`);
     if (state.phase === "init") parts.unshift(`<span><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="5" fill="#fcfcfb" stroke="#6b736e" stroke-width="2"/></svg> Not yet assigned</span>`);
+    if (state.phase === "seed") parts.unshift(`<span><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="5" fill="#006a4d" fill-opacity=".5" stroke="#006a4d"/></svg> Candidate</span>`);
     $("legend").innerHTML = parts.join("");
     let hint = data.labelled ? "Select a point to see its calculations." : "Select a point, or use the table below, to see its calculations.";
-    if (data.oneD) hint = "All points lie on one axis; the vertical stacking only keeps labels apart and is not used in any distance. Select a point to see its calculations.";
+    if (state.phase === "seed") hint = "A larger marker has a greater chance of being chosen as the next center.";
+    else if (data.oneD) hint ="All points lie on one axis; the vertical stacking only keeps labels apart and is not used in any distance. Select a point to see its calculations.";
     else if (cfg.dataset === "hours" && !data.scaled) hint = "The two axes use different scales. One hour of study is drawn much wider than one exam point, but the distance formula treats them equally.";
     $("plotHint").textContent = hint;
   }
 
   function renderPhases() {
     document.querySelectorAll(".phases li").forEach((li) => {
-      const active = li.dataset.phase === state.phase;
+      const active = li.dataset.phase === (state.phase === "seed" ? "init" : state.phase);
       li.classList.toggle("is-active", active);
       if (active) li.setAttribute("aria-current", "step"); else li.removeAttribute("aria-current");
     });
@@ -374,14 +455,22 @@
   function renderExplanation() {
     const k = cfg.k, it = state.iteration;
     const starts = data.labelled ? state.startIdx.map((i) => `${data.ids[i]} (${data.raw[i].join(", ")})`).join(", ") : `${k} data points`;
-    const emptyCount = state.phase === "init" ? 0 : state.centers.filter((_, j) => !state.labels.includes(j)).length;
+    const emptyCount = state.labels[0] < 0 ? 0 : state.centers.filter((_, j) => !state.labels.includes(j)).length;
     const ari = currentAri();
+    const n = state.centers.length;
     const copy = {
+      seed: {
+        kicker: `k-means++: ${n} of ${k} centers chosen`,
+        title: n === 1 ? "The first center is chosen at random" : "A far-away point is now more likely",
+        text: `${n === 1 ? `Every point had the same chance, and ${data.ids[state.startIdx[0]]} was selected.` : drawSentence()} For the next center, each point's chance is proportional to D², its squared distance to the nearest center chosen so far.`,
+        label: "Chance of being chosen next", formula: "P(x) = D(x)² / sum of all D²",
+        remark: "The selection is still random. A far-away point is likely, not certain, to be chosen.",
+      },
       init: {
         kicker: "Iteration 0", title: `Place ${k} starting centers`,
         text: `The starting centers are ${starts}. No point belongs to a cluster yet.`,
         label: "Starting centers", formula: `C1, ..., C${k}`,
-        remark: "Press Next step to assign each point to its nearest center.",
+        remark: `${drawSentence()} Press Next step to assign each point to its nearest center.`.trim(),
       },
       assign: {
         kicker: `Iteration ${it}: assignment`, title: "Each point joins its nearest center",
@@ -402,6 +491,10 @@
         remark: "Stopping guarantees a stable result, not the best one. A different start can end at a different inertia.",
       },
     }[state.phase];
+    if (state.justChanged.length) {
+      const names = data.labelled ? `: ${state.justChanged.map((i) => data.ids[i]).join(", ")}` : "";
+      copy.remark = `${state.justChanged.length} point${state.justChanged.length === 1 ? "" : "s"} changed cluster in this step${names}.`;
+    }
     if (emptyCount) copy.remark = `${emptyCount} center${emptyCount === 1 ? " has" : "s have"} no points, so ${emptyCount === 1 ? "it stays" : "they stay"} in place. Try a different start.`;
     $("phaseKicker").textContent = copy.kicker;
     $("phaseTitle").textContent = copy.title;
@@ -415,8 +508,11 @@
     $("history").textContent = state.trace.length ? state.trace.map(fmt).join(" > ").replaceAll(" > ", " → ") : "Available after the first assignment";
 
     const inertia = currentInertia();
-    $("inertiaLabel").textContent = inertia === null ? "Inertia: after the first assignment" : `Inertia: ${fmt(inertia)}`;
-    $("statusLabel").textContent = state.phase === "init" ? "Starting centers placed"
+    const earlierInertia = state.phase !== "converged" && state.trace.length > 1 ? state.trace[state.trace.length - 2] : null;
+    $("inertiaLabel").textContent = inertia === null ? "Inertia: after the first assignment"
+      : earlierInertia === null ? `Inertia: ${fmt(inertia)}` : `Inertia: ${fmt(earlierInertia)} → ${fmt(inertia)}`;
+    $("statusLabel").textContent = state.phase === "seed" ? `k-means++: choosing center ${n + 1} of ${k}`
+      : state.phase === "init" ? "Starting centers placed"
       : state.phase === "converged" ? `Finished after ${it} iteration${it === 1 ? "" : "s"}`
       : `Iteration ${it}: ${state.phase === "assign" ? "assigned points" : "moved centers"}`;
   }
@@ -437,7 +533,12 @@
       return `<div class="row${j === nearest ? " best" : ""}"><span class="tag">${swatch(j)} C${j + 1}</span><code>${expr}</code><strong>${fmt(distances[j])}</strong></div>`;
     }).join("");
     let verdict;
-    if (assigned < 0) verdict = `C${nearest + 1} is nearest. The point joins it at the next step.`;
+    if (state.phase === "seed") {
+      const s = KM.seedState(data.X, state.startIdx);
+      verdict = state.startIdx.includes(selected)
+        ? "This point is already a center, so it cannot be chosen again."
+        : `D² = ${fmt(distances[nearest])}² = ${fmt(s.d2[selected])}. Chance of being chosen next: ${fmt(s.d2[selected])} / ${fmt(s.total)} = ${pct(s.probs[selected])}.`;
+    } else if (assigned < 0) verdict =`C${nearest + 1} is nearest. The point joins it at the next step.`;
     else if (state.phase === "update") {
       verdict = nearest === assigned
         ? `After the move, C${nearest + 1} is still nearest and the point stays in cluster ${assigned + 1}.`
@@ -448,7 +549,7 @@
 
   function renderMeans() {
     const box = $("meansBox");
-    if (state.phase === "init") {
+    if (state.labels[0] < 0) {
       box.innerHTML = '<p class="empty">Means can be computed once points have been assigned.</p>';
       return;
     }
@@ -459,26 +560,37 @@
       if (!n) return `<div class="mean-block"><span class="tag">${swatch(j)} C${j + 1}</span> No points</div>`;
       const parts = c.map((_, f) => `${fmt(idx.reduce((s, i) => s + data.X[i][f], 0))} / ${n}`);
       const result = KM.means(data.X, state.labels, state.centers)[j];
-      return `<div class="mean-block"><span class="tag">${swatch(j)} C${j + 1}</span> ${n} point${n === 1 ? "" : "s"}: ${names}<code>(${parts.join(", ")}) = (${result.map(fmt).join(", ")})</code></div>`;
+      return `<div class="mean-block${animateStep && state.phase === "update" ? " flash" : ""}"><span class="tag">${swatch(j)} C${j + 1}</span> ${n} point${n === 1 ? "" : "s"}: ${names}<code>(${parts.join(", ")}) = (${result.map(fmt).join(", ")})</code></div>`;
     }).join("");
   }
 
   function renderTable() {
     const table = $("distanceTable");
-    table.tHead.innerHTML = `<tr><th>Point</th><th>Values</th>${state.centers.map((_, j) => `<th>To C${j + 1}</th>`).join("")}<th>Current cluster</th></tr>`;
     let rows = data.X.map((_, i) => i);
     const trimmed = rows.length > MAX_TABLE_ROWS;
     if (trimmed) {
       rows = rows.slice(0, MAX_TABLE_ROWS);
       if (!rows.includes(selected)) rows.push(selected);
     }
+    const trimNote = trimmed ? ` Showing ${MAX_TABLE_ROWS} of ${data.X.length} points.` : "";
+    if (state.phase === "seed") {
+      const s = KM.seedState(data.X, state.startIdx);
+      $("tableTitle").textContent = "Chance of each point becoming the next center";
+      table.tHead.innerHTML = "<tr><th>Point</th><th>Values</th><th>D²</th><th>Chance</th></tr>";
+      table.tBodies[0].innerHTML = rows.map((i) => `<tr class="${i === selected ? "is-selected" : ""}"><td><button type="button" class="row-button" data-i="${i}" aria-label="Show calculations for point ${data.ids[i]}">${data.ids[i]}</button></td><td>${data.X[i].map(fmt).join(", ")}</td><td>${fmt(s.d2[i])}</td><td>${state.startIdx.includes(i) ? "Already a center" : pct(s.probs[i])}</td></tr>`).join("");
+      $("tableNote").textContent = `The sum of D² over all points is ${fmt(s.total)}.${trimNote}`;
+      return;
+    }
+    $("tableTitle").textContent = "Distance from each point to each center";
+    table.tHead.innerHTML = `<tr><th>Point</th><th>Values</th>${state.centers.map((_, j) => `<th>To C${j + 1}</th>`).join("")}<th>Current cluster</th></tr>`;
     table.tBodies[0].innerHTML = rows.map((i) => {
       const d = state.centers.map((c) => KM.dist(data.X[i], c));
       const min = d.indexOf(Math.min(...d));
       const label = state.labels[i];
-      return `<tr class="${i === selected ? "is-selected" : ""}"><td><button type="button" class="row-button" data-i="${i}" aria-label="Show calculations for point ${data.ids[i]}">${data.ids[i]}</button></td><td>${data.X[i].map(fmt).join(", ")}</td>${d.map((v, j) => `<td class="${j === min ? "min" : ""}">${fmt(v)}</td>`).join("")}<td>${label < 0 ? "None yet" : `${swatch(label)} ${label + 1}`}</td></tr>`;
+      const rowClass = `${i === selected ? "is-selected" : ""}${animateStep && state.justChanged.includes(i) ? " flash" : ""}`;
+      return `<tr class="${rowClass}"><td><button type="button" class="row-button" data-i="${i}" aria-label="Show calculations for point ${data.ids[i]}">${data.ids[i]}</button></td><td>${data.X[i].map(fmt).join(", ")}</td>${d.map((v, j) => `<td class="${j === min ? "min" : ""}">${fmt(v)}</td>`).join("")}<td>${label < 0 ? "None yet" : `${swatch(label)} ${label + 1}`}</td></tr>`;
     }).join("");
-    $("tableNote").textContent = `The smallest distance in each row is shown in bold green.${trimmed ? ` Showing ${MAX_TABLE_ROWS} of ${data.X.length} points.` : ""}`;
+    $("tableNote").textContent = `The smallest distance in each row is shown in bold green.${trimNote}`;
   }
 
   function renderLog() {
@@ -560,6 +672,7 @@
     if (keepFocus) focusAfterRender = i;
     renderPlot();
     renderInspector();
+    renderFocus();
     renderTable();
   }
 
@@ -570,26 +683,89 @@
       text: "Step through the run that starts at 30, 61 and 92. Confirm that it ends at centers 37.25, 59.33 and 89.33 with inertia 186.08, as computed in class." },
     { title: "Exercise 2. A poor start", set: { dataset: "score", k: 3, start: "poor", scaled: false },
       text: "This run starts at 42, 86 and 90. Compare its inertia with Example 1 in the Completed runs table. Both runs stopped, so why did this one not reach the better grouping?" },
-    { title: "Exercise 3. Unscaled features", set: { dataset: "hours", k: 3, start: "good", scaled: false },
+    { title: "Exercise 3. Watch k-means++ choose", set: { dataset: "score", k: 3, start: "kpp", scaled: false },
+      text: "Step through the draws and watch the chances change after each new center. Why do points near a chosen center become unlikely? Press New random draw several times and compare the final inertia with Exercise 2." },
+    { title: "Exercise 4. Unscaled features", set: { dataset: "hours", k: 3, start: "good", scaled: false },
       text: "Run this setup on hours and score, then tick Standardize features and run it again. Which students change groups, and which feature was controlling the distances before scaling?" },
-    { title: "Exercise 4. Shapes that are not round", set: { dataset: "moons", k: 2, start: "kpp", scaled: false },
+    { title: "Exercise 5. Shapes that are not round", set: { dataset: "moons", k: 2, start: "kpp", scaled: false },
       text: "K is correct here, at two moons. Run it to the end and read the adjusted Rand index. Why does a nearest-center rule split the moons in this way?" },
-    { title: "Exercise 5. Choosing K", set: { dataset: "score", k: 4, start: "good", scaled: false },
+    { title: "Exercise 6. Choosing K", set: { dataset: "score", k: 4, start: "good", scaled: false },
       text: "Open the Choosing K section. Where is the elbow, and which K has the highest silhouette? Do the two guides agree?", target: "choosing-k" },
+    { title: "Exercise 7. Curved clusters", compare: "moons",
+      text: "Lower eps slowly and note when the moons break apart and noise appears. Then raise eps until the moons merge. Why does the K-Means panel not change while you do this?" },
+    { title: "Exercise 8. When K-Means is the better choice", compare: "blobs",
+      text: "These three groups touch. The DBSCAN settings loaded here were the best of 1,121 combinations tried. Compare the two ARI values. Why does a density-based method struggle when dense groups touch?" },
+    { title: "Exercise 9. Students who fit no group", compare: "score",
+      text: "Select students B and G. How does each method treat them? For what kind of question would you want a student to be left unassigned?" },
   ];
 
   function renderExperiments() {
-    $("experimentCards").innerHTML = EXPERIMENTS.map((e, i) => `<article class="card"><h3>${e.title}</h3><p>${e.text}</p><button class="button" type="button" data-exp="${i}">Load this setup</button></article>`).join("");
+    $("experimentCards").innerHTML = EXPERIMENTS.map((e, i) => `<article class="card"><h3>${e.title}</h3><p>${e.text}</p><button class="button" type="button" data-exp="${i}">Start this activity</button></article>`).join("");
     $("experimentCards").addEventListener("click", (event) => {
       const button = event.target.closest("[data-exp]");
-      if (!button) return;
-      const e = EXPERIMENTS[Number(button.dataset.exp)];
-      Object.assign(cfg, e.set);
-      reset();
-      $(e.target || "lab").scrollIntoView();
-      if (!e.target) $("stepButton").focus({ preventScroll: true });
+      if (button) openTask(Number(button.dataset.exp));
     });
   }
+
+  // ---- Docked activity ----------------------------------------------------
+
+  const noteKey = (i) => `kmeans-lab-note-${i}`;
+  function readNote(i) {
+    try { return localStorage.getItem(noteKey(i)) || ""; } catch (err) { return ""; }
+  }
+  function writeNote(i, value) {
+    try { localStorage.setItem(noteKey(i), value); } catch (err) { /* notes are optional */ }
+  }
+
+  function openTask(i) {
+    const e = EXPERIMENTS[i];
+    activeTask = i;
+    const where = e.compare ? "compare" : e.target || "lab";
+    if (e.compare) window.LabCompare.load(e.compare);
+    else { Object.assign(cfg, e.set); reset(); }
+    const anchor = { lab: document.querySelector("#lab .phases"), compare: document.querySelector("#compare .cmp-settings"), "choosing-k": $("elbowLead") }[where];
+    const dock = $("taskDock");
+    anchor.parentNode.insertBefore(dock, anchor);
+    dock.hidden = false;
+    document.body.classList.toggle("has-task", where === "lab");
+    $("taskKicker").textContent = `Activity ${i + 1} of ${EXPERIMENTS.length}`;
+    $("taskTitle").textContent = e.title.replace(/^\w+ \d+\. /, "");
+    $("taskText").textContent = e.text;
+    const note = readNote(i);
+    $("taskNotes").value = note;
+    $("taskNotesBox").open = Boolean(note);
+    $("taskPrev").disabled = i === 0;
+    $("taskNext").disabled = i === EXPERIMENTS.length - 1;
+    renderTaskSteps();
+    $(where).scrollIntoView();
+    if (where === "lab") $("stepButton").focus({ preventScroll: true });
+  }
+
+  function closeTask() {
+    activeTask = null;
+    $("taskDock").hidden = true;
+    document.body.classList.remove("has-task");
+  }
+
+  function renderTaskSteps() {
+    if (activeTask === null) return;
+    const e = EXPERIMENTS[activeTask];
+    $("taskSteps").textContent = e.compare || e.target ? "" : `Steps taken: ${history.length}`;
+  }
+
+  // ---- Presenter mode -----------------------------------------------------
+
+  function setPresent(on) {
+    document.body.classList.toggle("present", on);
+    $("presentButton").textContent = on ? "Exit" : "Present";
+    if (on && document.documentElement.requestFullscreen) {
+      document.documentElement.requestFullscreen().catch(() => { /* the page layout still applies */ });
+    } else if (!on && document.fullscreenElement) {
+      document.exitFullscreen();
+    }
+    requestAnimationFrame(renderPlot);
+  }
+  const presenting = () => document.body.classList.contains("present");
 
   // ---- Events -------------------------------------------------------------
 
@@ -612,6 +788,17 @@
     reset();
   });
   $("clearLog").addEventListener("click", () => { runLog = []; renderLog(); });
+  $("presentButton").addEventListener("click", () => setPresent(!presenting()));
+  document.addEventListener("fullscreenchange", () => {
+    if (!document.fullscreenElement && presenting()) setPresent(false);
+    else requestAnimationFrame(renderPlot);
+  });
+  window.addEventListener("resize", () => { if (presenting()) renderPlot(); });
+  $("taskPrev").addEventListener("click", () => openTask(activeTask - 1));
+  $("taskNext").addEventListener("click", () => openTask(activeTask + 1));
+  $("taskClose").addEventListener("click", closeTask);
+  $("taskNotes").addEventListener("input", (e) => { if (activeTask !== null) writeNote(activeTask, e.target.value); });
+  new IntersectionObserver(([entry]) => document.body.classList.toggle("lab-visible", entry.isIntersecting), { rootMargin: "0px 0px -70px 0px" }).observe($("lab"));
 
   $("plot").addEventListener("click", (event) => {
     const point = event.target.closest(".pt");
@@ -634,6 +821,8 @@
     if (event.ctrlKey || event.metaKey || event.altKey) return;
     const t = event.target;
     if (t.matches("input, select, textarea")) return;
+    if (event.key === "Escape" && presenting()) { setPresent(false); return; }
+    if (event.key === "f" || event.key === "F") { setPresent(!presenting()); return; }
     if (event.key === "ArrowRight") { event.preventDefault(); stop(); advance(); }
     else if (event.key === "ArrowLeft") { event.preventDefault(); back(); }
     else if (t.matches("button, a")) return;
@@ -654,6 +843,8 @@
   });
 
   compactQuery.addEventListener("change", renderPlot);
+
+  window.LabDraw = { el, shapePath, starPoints, niceTicks, extent, stackLevels, fmt, swatch };
 
   renderExperiments();
   renderLog();

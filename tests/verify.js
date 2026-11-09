@@ -86,5 +86,47 @@ check("inertia is non-increasing", rose === 0, `${rose} rises`);
   });
 });
 
+// k-means++ worked example on the page: first center B (30).
+const seed = KM.seedState(scoreOnly, [1]);
+near("kpp: total D2", seed.total, 13539);
+near("kpp: D2 of I", seed.d2[8], 3844);
+near("kpp: D2 of D", seed.d2[3], 4);
+near("kpp: chance of I", seed.probs[8], 0.2839, 5e-5);
+near("kpp: chance of D", seed.probs[3], 0.0003, 5e-5);
+near("kpp: probabilities sum to 1", seed.probs.reduce((a, b) => a + b, 0), 1, 1e-12);
+check("kpp: chosen point cannot repeat", seed.probs[1] === 0);
+
+// Draws occur at the stated rates.
+const counts = new Array(10).fill(0), drawRng = KM.mulberry32(7), draws = 200000;
+for (let i = 0; i < draws; i += 1) counts[KM.pickSeed(seed.probs, drawRng())] += 1;
+counts.forEach((c, i) => near(`kpp: draw rate ${i}`, c / draws, seed.probs[i], 5e-3));
+
+// Identical points leave total D2 at 0; selection must still return unchosen points.
+const same = [[1], [1], [1], [1]];
+check("kpp: identical points stay distinct", new Set(KM.kppInit(same, 3, KM.mulberry32(2))).size === 3);
+
+// DBSCAN matches scikit-learn exactly: labels, core points and ARI.
+const db = ref.dbscan;
+function dbCheck(name, X, c, truth) {
+  const r = KM.dbscan(X, c.eps, c.min_samples);
+  sameArray(`${name} eps=${c.eps} labels`, r.labels, c.labels);
+  sameArray(`${name} eps=${c.eps} core`, r.core.flatMap((v, i) => (v ? [i] : [])), c.core);
+  if (truth) near(`${name} eps=${c.eps} ari`, KM.ari(truth, r.labels), c.ari);
+}
+db.moons.forEach((c) => dbCheck("moons", m.X, c, m.y));
+db.blobs.cases.forEach((c) => dbCheck("blobs", db.blobs.X, c, db.blobs.y));
+db.score.forEach((c) => dbCheck("score", scoreOnly, c));
+
+// Figures quoted on the page.
+near("moons DBSCAN ARI on page", db.moons[0].ari, 1.0);
+near("blobs K-Means ARI on page", db.blobs.kmeans_ari, 0.90, 5e-3);
+near("blobs DBSCAN best ARI on page", db.blobs.grid_best_ari, 0.67, 5e-3);
+check("blobs grid size on page", db.blobs.grid_size === 1121, db.blobs.grid_size);
+check("blobs suggested settings", db.blobs.grid_best_eps === 0.85 && db.blobs.grid_best_min_samples === 11);
+const page = KM.dbscan(scoreOnly, 5, 3);
+const members = (g) => "ABCDEFGHIJ".split("").filter((_, i) => page.labels[i] === g).join("");
+sameArray("page example: clusters", [members(0), members(1), members(-1)], ["ACE", "FHI", "BDGJ"]);
+sameArray("page example: core points", "ABCDEFGHIJ".split("").filter((_, i) => page.core[i]).join(""), "ACEH");
+
 console.log(`${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

@@ -75,23 +75,32 @@
     return pool.slice(0, k);
   }
 
+  // k-means++: each point's squared distance to its nearest chosen center, and its
+  // chance of being chosen next. If every point is at distance 0, unchosen points are equally likely.
+  function seedState(X, chosen) {
+    const d2 = X.map((p) => Math.min(...chosen.map((i) => sq(p, X[i]))));
+    const total = d2.reduce((a, b) => a + b, 0);
+    const open = X.length - chosen.length;
+    const probs = total > 0 ? d2.map((d) => d / total) : X.map((_, i) => (chosen.includes(i) ? 0 : 1 / open));
+    return { d2, total, probs };
+  }
+
+  // Maps a uniform number r in [0, 1) to a point, using cumulative probability.
+  function pickSeed(probs, r) {
+    let cumulative = 0, last = -1;
+    for (let i = 0; i < probs.length; i += 1) {
+      if (probs[i] > 0) {
+        cumulative += probs[i];
+        last = i;
+        if (r < cumulative) return i;
+      }
+    }
+    return last;
+  }
+
   function kppInit(X, k, rng) {
     const chosen = [Math.floor(rng() * X.length)];
-    while (chosen.length < k) {
-      const weights = X.map((p) => Math.min(...chosen.map((i) => sq(p, X[i]))));
-      const total = weights.reduce((a, b) => a + b, 0);
-      if (total === 0) {
-        chosen.push(X.findIndex((_, i) => !chosen.includes(i)));
-        continue;
-      }
-      let target = rng() * total, pick = weights.findIndex((w) => w > 0);
-      for (let i = 0; i < X.length; i += 1) {
-        target -= weights[i];
-        if (weights[i] > 0) pick = i;
-        if (target <= 0 && weights[i] > 0) break;
-      }
-      chosen.push(pick);
-    }
+    while (chosen.length < k) chosen.push(pickSeed(seedState(X, chosen).probs, rng()));
     return chosen;
   }
 
@@ -115,6 +124,30 @@
       if (!best || result.inertia < best.inertia) best = result;
     }
     return best;
+  }
+
+  // DBSCAN with scikit-learn's conventions: min_samples counts the point itself, and a
+  // neighbor is at distance <= eps. Labels start at 0, and -1 marks noise.
+  function dbscan(X, eps, minSamples) {
+    const neighbors = X.map((p) => X.reduce((list, q, j) => {
+      if (dist(p, q) <= eps) list.push(j);
+      return list;
+    }, []));
+    const core = neighbors.map((list) => list.length >= minSamples);
+    const labels = X.map(() => -1);
+    let next = 0;
+    X.forEach((_, start) => {
+      if (labels[start] !== -1 || !core[start]) return;
+      const stack = [start];
+      while (stack.length) {
+        const i = stack.pop();
+        if (labels[i] !== -1) continue;
+        labels[i] = next;
+        if (core[i]) neighbors[i].forEach((j) => { if (labels[j] === -1) stack.push(j); });
+      }
+      next += 1;
+    });
+    return { labels, core, neighbors, clusters: next };
   }
 
   function silhouette(X, labels) {
@@ -150,5 +183,5 @@
     return max === expected ? 1 : (index - expected) / (max - expected);
   }
 
-  return { dist, assign, means, inertia, run, standardize, randomInit, kppInit, spreadInit, poorInit, bestOf, silhouette, ari, mulberry32 };
+  return { dist, assign, means, inertia, run, standardize, randomInit, seedState, pickSeed, kppInit, spreadInit, poorInit, bestOf, dbscan, silhouette, ari, mulberry32 };
 });

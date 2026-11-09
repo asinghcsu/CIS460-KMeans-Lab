@@ -18,6 +18,7 @@
       <a href="#experiments">Experiments</a>
       <a href="#method">Method</a>
       <a href="#choosing-k">Choosing K</a>
+      <a href="#compare">vs DBSCAN</a>
       <a href="#limits">Limits</a>
     </nav>
   </header>
@@ -25,17 +26,30 @@
   <main id="top">
     <section class="intro">
       <h1>K-Means, one calculation at a time</h1>
-      <p>K-Means places points into K groups by repeating two operations: each point joins its nearest center, and each center moves to the mean of its points. Press <strong>Next step</strong> to follow every calculation, beginning with the ten students from class.</p>
+      <p>Each point joins its nearest center, then each center moves to the mean of its points. Press <strong>Next step</strong> to follow every calculation.</p>
     </section>
 
     <section id="lab" class="lab" aria-label="Interactive lab">
+      <div class="toolbar">
+      <div class="transport">
+        <button class="button" id="prevButton" type="button">Previous</button>
+        <button class="button primary" id="stepButton" type="button">Next step</button>
+        <button class="button" id="playButton" type="button">Play</button>
+        <button class="button" id="resetButton" type="button">Reset</button>
+        <select id="speedSelect" class="speed" aria-label="Animation speed">
+          <option value="1500">Speed: Slow</option>
+          <option value="900" selected>Speed: Normal</option>
+          <option value="400">Speed: Fast</option>
+        </select>
+        <button class="button" id="presentButton" type="button">Present</button>
+      </div>
       <div class="settings" aria-label="Lab settings">
         <label>Data
           <select id="datasetSelect">
-            <option value="score">10 students: exam score</option>
-            <option value="hours">10 students: hours and score</option>
-            <option value="moons">Two moons (200 points)</option>
-            <option value="blobs">Random groups (15 points)</option>
+            <option value="score">Students: score</option>
+            <option value="hours">Students: hours + score</option>
+            <option value="moons">Two moons</option>
+            <option value="blobs">Random groups</option>
           </select>
         </label>
         <label>Clusters (K)
@@ -53,24 +67,29 @@
             <option value="kpp">k-means++</option>
           </select>
         </label>
-        <label class="check-field"><input id="scaleToggle" type="checkbox"> Standardize features</label>
-        <button class="button quiet" id="redrawButton" type="button">New random draw</button>
+        <label class="check-field"><input id="scaleToggle" type="checkbox"> Standardize</label>
+        <button class="button quiet" id="redrawButton" type="button">New draw</button>
+      </div>
       </div>
 
-      <div class="transport">
-        <button class="button" id="prevButton" type="button">Previous</button>
-        <button class="button primary" id="stepButton" type="button">Next step</button>
-        <button class="button" id="playButton" type="button">Play</button>
-        <button class="button" id="resetButton" type="button">Reset</button>
-        <label class="speed">Speed
-          <select id="speedSelect">
-            <option value="1500">Slow</option>
-            <option value="900" selected>Normal</option>
-            <option value="400">Fast</option>
-          </select>
-        </label>
-        <p class="keys">Keyboard: <kbd>&larr;</kbd> <kbd>&rarr;</kbd> step, <kbd>Space</kbd> play or pause, <kbd>R</kbd> reset</p>
-      </div>
+      <section id="taskDock" class="task-dock" aria-label="Current activity" hidden>
+        <div class="task-main">
+          <p class="kicker" id="taskKicker"></p>
+          <h3 id="taskTitle"></h3>
+          <p id="taskText"></p>
+        </div>
+        <div class="task-actions">
+          <span class="sub" id="taskSteps"></span>
+          <button class="button small" id="taskPrev" type="button">Previous activity</button>
+          <button class="button small" id="taskNext" type="button">Next activity</button>
+          <button class="button small quiet" id="taskClose" type="button">Close</button>
+        </div>
+        <details class="task-notes" id="taskNotesBox">
+          <summary>Notes</summary>
+          <textarea id="taskNotes" rows="3" aria-label="Your notes for this activity"></textarea>
+          <p class="hint">Notes are kept only in this browser.</p>
+        </details>
+      </section>
 
       <ol class="phases" aria-label="Algorithm phases">
         <li data-phase="init"><b>1. Initialize</b><small>Place K centers</small></li>
@@ -88,12 +107,14 @@
           <svg id="plot" role="group" aria-label="Scatter plot of the data, cluster memberships and centers"></svg>
           <div class="legend" id="legend"></div>
           <p class="hint" id="plotHint"></p>
+          <p class="keys">Keyboard: <kbd>&larr;</kbd> <kbd>&rarr;</kbd> step, <kbd>Space</kbd> play or pause, <kbd>R</kbd> reset, <kbd>F</kbd> present</p>
         </div>
 
         <aside class="panel explain" id="explain" aria-live="polite">
           <p class="kicker" id="phaseKicker"></p>
           <h2 id="phaseTitle"></h2>
           <p id="phaseText"></p>
+          <div class="focus" id="focusCalc" hidden><span>Key calculation</span><p id="focusText"></p></div>
           <div class="formula"><span id="formulaLabel"></span><code id="formula"></code></div>
           <dl class="metrics">
             <div><dt>Iteration</dt><dd id="mIter"></dd></div>
@@ -119,7 +140,7 @@
       </div>
 
       <div class="panel table-panel">
-        <h3>Distance from each point to each center</h3>
+        <h3 id="tableTitle">Distance from each point to each center</h3>
         <div class="table-wrap"><table id="distanceTable"><thead></thead><tbody></tbody></table></div>
         <p class="hint" id="tableNote"></p>
       </div>
@@ -175,6 +196,19 @@
       <code class="eq">inertia = &Sigma;<sub>j</sub> &Sigma;<sub>i in cluster j</sub> &#8214;x<sub>i</sub> &minus; c<sub>j</sub>&#8214;&sup2;</code>
       <p>Assignment cannot raise inertia, because each point moves only to a center at least as close. Update cannot raise it either, because the mean is the location with the smallest total squared distance to the cluster's points. There are finitely many possible groupings, so the algorithm must stop. It may stop at a <strong>local minimum</strong> rather than the best possible grouping, which is why the start matters.</p>
 
+      <h3 class="block-title" id="kmeanspp">k-means++: choosing better starting centers</h3>
+      <p>Because a poor start can trap the algorithm in a poor result, <strong>k-means++</strong> spreads the starting centers apart while keeping the choice random.</p>
+      <ol class="plain-steps">
+        <li>Choose the first center uniformly at random from the data.</li>
+        <li>For each point, compute D(x)&sup2;, its squared distance to the nearest center chosen so far.</li>
+        <li>Choose the next center at random, with each point's chance proportional to D(x)&sup2;.</li>
+        <li>Repeat steps 2 and 3 until K centers are chosen, then run K-Means as usual.</li>
+      </ol>
+      <code class="eq">P(x) = D(x)&sup2; / &Sigma;<sub>all points</sub> D(x)&sup2;</code>
+      <p><strong>Example.</strong> Suppose the first center is student B, who scored 30. Student I scored 92, so D&sup2; = 62&sup2; = 3,844. Student D scored 32, so D&sup2; = 2&sup2; = 4. Over all ten students the D&sup2; values add to 13,539, so I is chosen next with probability 3,844 / 13,539 = 28.4%, and D with probability 4 / 13,539 = 0.03%.</p>
+      <p><strong>Remark.</strong> Squaring the distance strengthens the preference for far-away points. The selection remains random, so k-means++ improves the start but does not guarantee the best result. Running it several times and keeping the lowest inertia helps further. scikit-learn's version also tries several candidates at each draw and keeps the most useful one.</p>
+      <p>To see each draw, set <strong>Starting centers</strong> to k-means++ in the lab.</p>
+
       <h3 class="block-title">The same run in scikit-learn</h3>
 <pre class="code"><code>from sklearn.cluster import KMeans
 import numpy as np
@@ -206,6 +240,94 @@ print(model.inertia_)                   # inertia</code></pre>
       <p><strong>Reading the figure.</strong> The best achievable inertia keeps falling as K grows, so the smallest inertia cannot select K. Look instead for the <strong>elbow</strong>, where additional clusters stop producing large reductions. The <strong>silhouette</strong> score compares how close each point is to its own cluster and to the nearest other cluster; values nearer 1 are better.</p>
       <p id="elbowLive"></p>
       <p><strong>Remark.</strong> These are guides only. The elbow can be ambiguous, and the most useful K also depends on what the clusters will be used for.</p>
+    </section>
+
+    <section id="compare" class="content">
+      <h2>K-Means vs DBSCAN</h2>
+      <p class="lead">Both methods run on the same data below. Move the sliders and select any point to see how each method treats it.</p>
+
+      <div class="settings cmp-settings" aria-label="Comparison settings">
+        <label>Data
+          <select id="cmpData">
+            <option value="moons">Two moons (200 points)</option>
+            <option value="blobs">Touching groups (200 points)</option>
+            <option value="score">10 students: exam score</option>
+          </select>
+        </label>
+        <label>K-Means: K
+          <select id="cmpK">
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+          </select>
+        </label>
+        <label class="slider">DBSCAN: eps <output id="cmpEpsValue" for="cmpEps"></output>
+          <input id="cmpEps" type="range">
+        </label>
+        <label class="slider">DBSCAN: min_samples <output id="cmpMinValue" for="cmpMin"></output>
+          <input id="cmpMin" type="range" min="2" max="20" step="1">
+        </label>
+        <button class="button quiet" id="cmpRestore" type="button">Restore settings</button>
+      </div>
+
+      <div class="cmp-grid">
+        <div class="panel">
+          <div class="plot-head"><strong>K-Means</strong><span id="cmpKmeansHead"></span></div>
+          <svg id="cmpKmeans" class="cmp-plot" role="group" aria-label="K-Means clusters and centers"></svg>
+        </div>
+        <div class="panel">
+          <div class="plot-head"><strong>DBSCAN</strong><span id="cmpDbscanHead"></span></div>
+          <svg id="cmpDbscan" class="cmp-plot" role="group" aria-label="DBSCAN clusters, border points and noise. The shaded area is the eps neighborhood of the selected point."></svg>
+        </div>
+      </div>
+      <div class="legend cmp-legend" id="cmpLegend"></div>
+      <p class="hint">The shaded area on the DBSCAN plot is the eps neighborhood of the selected point. Cluster numbers are arbitrary and colors are matched only to aid comparison.</p>
+
+      <div class="cmp-detail">
+        <div class="panel" id="cmpInspect" aria-live="polite"></div>
+        <div class="panel">
+          <h3>Results</h3>
+          <div class="table-wrap"><table id="cmpTable"><thead><tr><th scope="col">Measure</th><th scope="col">K-Means</th><th scope="col">DBSCAN</th></tr></thead><tbody></tbody></table></div>
+        </div>
+      </div>
+
+      <h3 class="block-title">How DBSCAN works</h3>
+      <p>DBSCAN defines a cluster as a dense region of points. It needs two settings: <strong>eps</strong>, the radius of a neighborhood, and <strong>min_samples</strong>, the number of points that make a neighborhood dense. In scikit-learn the count includes the point itself. Every point then takes one of three roles.</p>
+      <ul class="plain-steps">
+        <li><strong>Core point:</strong> at least min_samples points lie within eps of it.</li>
+        <li><strong>Border point:</strong> not a core point, but within eps of a core point.</li>
+        <li><strong>Noise:</strong> neither of these, so it joins no cluster.</li>
+      </ul>
+      <p>Core points within eps of each other join the same cluster, and each border point joins a cluster of a nearby core point. The number of clusters follows from the data.</p>
+      <p><strong>Example.</strong> On the exam scores with eps = 5 and min_samples = 3, student H (90) has 86, 90 and 92 within 5 points, so H is a core point. Student F (86) has only 86 and 90 within 5, but 90 is a core point, so F is a border point. Student B (30) has only 30 and 32 within 5 and neither is a core point, so B is noise. The result is two clusters, {A, C, E} and {F, H, I}, with B, D, G and J left as noise.</p>
+
+      <div class="table-wrap method-table">
+        <table>
+          <thead><tr><th scope="col"></th><th scope="col">K-Means</th><th scope="col">DBSCAN</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">A cluster is</th><td class="wrap">the points nearest to a center</td><td class="wrap">a connected dense region</td></tr>
+            <tr><th scope="row">You choose</th><td class="wrap">K, and the starting centers vary</td><td class="wrap">eps and min_samples</td></tr>
+            <tr><th scope="row">Number of clusters</th><td class="wrap">fixed by K</td><td class="wrap">follows from the data</td></tr>
+            <tr><th scope="row">Cluster shapes</th><td class="wrap">compact and roughly round</td><td class="wrap">any shape, if separated by sparse space</td></tr>
+            <tr><th scope="row">Outliers</th><td class="wrap">assigned to a cluster and can pull its mean</td><td class="wrap">can be left as noise</td></tr>
+            <tr><th scope="row">Main difficulty</th><td class="wrap">curved or very unequal groups</td><td class="wrap">groups that touch or differ in density</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p><strong>Remark.</strong> Neither method is better in general. On the moons, K-Means scores an ARI of 0.26 and DBSCAN 1.00. On the touching groups, K-Means scores 0.90 and the best of 1,121 DBSCAN settings tried scores 0.67. ARI requires known groups, which real clustering problems usually do not have. DBSCAN relies on distances, so features should be on comparable scales.</p>
+
+      <h3 class="block-title">The same comparison in scikit-learn</h3>
+<pre class="code"><code>from sklearn.cluster import KMeans, DBSCAN
+from sklearn.datasets import make_moons
+from sklearn.metrics import adjusted_rand_score
+
+X, y = make_moons(n_samples=200, noise=0.05, random_state=0)
+
+km = KMeans(n_clusters=2, n_init=10, random_state=0).fit_predict(X)
+db = DBSCAN(eps=0.3, min_samples=5).fit_predict(X)   # -1 means noise
+
+print(adjusted_rand_score(y, km))
+print(adjusted_rand_score(y, db))</code></pre>
     </section>
 
     <section id="limits" class="content">
@@ -241,6 +363,8 @@ print(model.inertia_)                   # inertia</code></pre>
   <div class="tip" id="tip" role="status" hidden></div>
   <script src="kmeans.js"></script>
   <script src="moons.js"></script>
+  <script src="blobs.js"></script>
   <script src="app.js"></script>
+  <script src="compare.js"></script>
 </body>
 </html>
