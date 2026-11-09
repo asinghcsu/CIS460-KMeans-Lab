@@ -20,6 +20,7 @@
       <a href="#choosing-k">Choosing K</a>
       <a href="#compare">vs DBSCAN</a>
       <a href="#limits">Limits</a>
+      <a href="#quiz">Knowledge check</a>
     </nav>
   </header>
 
@@ -353,6 +354,19 @@ print(adjusted_rand_score(y, db))</code></pre>
         </div>
       </div>
     </section>
+
+    <section id="quiz" class="content">
+      <h2>Student knowledge check</h2>
+      <p class="lead" id="quizProgress" aria-live="polite"></p>
+      <form id="quizForm" class="quiz">
+        <div class="quiz-questions"></div>
+        <div class="quiz-actions">
+          <button class="button primary" id="quizCheck" type="submit">Check answers</button>
+          <button class="button" type="reset">Reset</button>
+          <strong id="quizScore" role="status"></strong>
+        </div>
+      </form>
+    </section>
   </main>
 
   <footer>
@@ -366,5 +380,6 @@ print(adjusted_rand_score(y, db))</code></pre>
   <script src="blobs.js"></script>
   <script src="app.js"></script>
   <script src="compare.js"></script>
+  <script src="quiz.js"></script>
 </body>
 </html>
