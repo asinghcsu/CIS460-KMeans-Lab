@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="An interactive, step-by-step K-Means clustering lab for CIS 460 Machine Learning.">
+  <title>K-Means Lab</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23006a4d'/%3E%3Ccircle cx='20' cy='22' r='7' fill='white'/%3E%3Crect x='36' y='14' width='14' height='14' fill='white'/%3E%3Cpath d='M32 36l9 16H23z' fill='white'/%3E%3C/svg%3E">
+</head>
+<body>
+  <a class="skip-link" href="#lab">Skip to the lab</a>
+
+  <header class="site-header">
+    <a class="brand" href="#top"><span class="brand-course">CIS 460</span> K-Means Lab</a>
+    <nav aria-label="Sections">
+      <a href="#lab">Lab</a>
+      <a href="#experiments">Experiments</a>
+      <a href="#method">Method</a>
+      <a href="#choosing-k">Choosing K</a>
+      <a href="#limits">Limits</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="intro">
+      <h1>K-Means, one calculation at a time</h1>
+      <p>K-Means places points into K groups by repeating two operations: each point joins its nearest center, and each center moves to the mean of its points. Press <strong>Next step</strong> to follow every calculation, beginning with the ten students from class.</p>
+    </section>
+
+    <section id="lab" class="lab" aria-label="Interactive lab">
+      <div class="settings" aria-label="Lab settings">
+        <label>Data
+          <select id="datasetSelect">
+            <option value="score">10 students: exam score</option>
+            <option value="hours">10 students: hours and score</option>
+            <option value="moons">Two moons (200 points)</option>
+            <option value="blobs">Random groups (15 points)</option>
+          </select>
+        </label>
+        <label>Clusters (K)
+          <select id="kSelect">
+            <option value="2">2</option>
+            <option value="3" selected>3</option>
+            <option value="4">4</option>
+          </select>
+        </label>
+        <label>Starting centers
+          <select id="startSelect">
+            <option value="good">Well spread</option>
+            <option value="poor">Poorly placed</option>
+            <option value="random">Random points</option>
+            <option value="kpp">k-means++</option>
+          </select>
+        </label>
+        <label class="check-field"><input id="scaleToggle" type="checkbox"> Standardize features</label>
+        <button class="button quiet" id="redrawButton" type="button">New random draw</button>
+      </div>
+
+      <div class="transport">
+        <button class="button" id="prevButton" type="button">Previous</button>
+        <button class="button primary" id="stepButton" type="button">Next step</button>
+        <button class="button" id="playButton" type="button">Play</button>
+        <button class="button" id="resetButton" type="button">Reset</button>
+        <label class="speed">Speed
+          <select id="speedSelect">
+            <option value="1500">Slow</option>
+            <option value="900" selected>Normal</option>
+            <option value="400">Fast</option>
+          </select>
+        </label>
+        <p class="keys">Keyboard: <kbd>&larr;</kbd> <kbd>&rarr;</kbd> step, <kbd>Space</kbd> play or pause, <kbd>R</kbd> reset</p>
+      </div>
+
+      <ol class="phases" aria-label="Algorithm phases">
+        <li data-phase="init"><b>1. Initialize</b><small>Place K centers</small></li>
+        <li data-phase="assign"><b>2. Assign</b><small>Join the nearest center</small></li>
+        <li data-phase="update"><b>3. Update</b><small>Move to the mean</small></li>
+        <li data-phase="converged"><b>4. Stop</b><small>No point changed</small></li>
+      </ol>
+
+      <div class="lab-grid">
+        <div class="panel plot-panel">
+          <div class="plot-head">
+            <strong id="statusLabel"></strong>
+            <span id="inertiaLabel"></span>
+          </div>
+          <svg id="plot" role="group" aria-label="Scatter plot of the data, cluster memberships and centers"></svg>
+          <div class="legend" id="legend"></div>
+          <p class="hint" id="plotHint"></p>
+        </div>
+
+        <aside class="panel explain" id="explain" aria-live="polite">
+          <p class="kicker" id="phaseKicker"></p>
+          <h2 id="phaseTitle"></h2>
+          <p id="phaseText"></p>
+          <div class="formula"><span id="formulaLabel"></span><code id="formula"></code></div>
+          <dl class="metrics">
+            <div><dt>Iteration</dt><dd id="mIter"></dd></div>
+            <div><dt>Points changed</dt><dd id="mChanged"></dd></div>
+            <div><dt>Largest center move</dt><dd id="mShift"></dd></div>
+          </dl>
+          <p class="remark" id="remark"></p>
+          <p class="history"><span>Inertia so far</span><code id="history"></code></p>
+        </aside>
+      </div>
+
+      <div class="calc-grid">
+        <section class="panel" aria-labelledby="inspectTitle">
+          <h3 id="inspectTitle"></h3>
+          <p class="sub" id="inspectSub"></p>
+          <div id="distances"></div>
+          <p class="verdict" id="verdict"></p>
+        </section>
+        <section class="panel" aria-labelledby="meansTitle">
+          <h3 id="meansTitle">Mean of each cluster</h3>
+          <div id="meansBox"></div>
+        </section>
+      </div>
+
+      <div class="panel table-panel">
+        <h3>Distance from each point to each center</h3>
+        <div class="table-wrap"><table id="distanceTable"><thead></thead><tbody></tbody></table></div>
+        <p class="hint" id="tableNote"></p>
+      </div>
+
+      <div class="panel table-panel">
+        <div class="log-head">
+          <h3>Completed runs</h3>
+          <button class="button quiet small" id="clearLog" type="button">Clear</button>
+        </div>
+        <p class="sub">Each run that reaches the stopping rule is recorded here. Compare inertia only between runs on the same data, scaling and K.</p>
+        <div class="table-wrap"><table id="logTable"><thead><tr><th>Data</th><th>K</th><th>Start</th><th>Iterations</th><th>Inertia</th><th>ARI</th><th>Clusters</th></tr></thead><tbody></tbody></table></div>
+      </div>
+    </section>
+
+    <section id="experiments" class="content">
+      <h2>Guided experiments</h2>
+      <p class="lead">Each button loads a setup into the lab. Run it to the end, then answer the question.</p>
+      <div class="cards" id="experimentCards"></div>
+    </section>
+
+    <section id="method" class="content">
+      <h2>The method</h2>
+      <p class="lead">K-Means is an unsupervised method: it receives no correct answers and groups points by distance alone. The example below uses the exam scores from class with K = 3 and starting centers 30, 61 and 92.</p>
+      <ol class="steps">
+        <li>
+          <h3>Choose K</h3>
+          <p>K is the number of clusters. The analyst sets it before the algorithm runs; K-Means does not determine it.</p>
+        </li>
+        <li>
+          <h3>Place K starting centers</h3>
+          <p>A center is a location. It begins at a data point in this lab, and after the first update it is usually not one. <strong>k-means++</strong>, the scikit-learn default, chooses starting points that tend to lie far apart.</p>
+        </li>
+        <li>
+          <h3>Assign each point to the nearest center</h3>
+          <p>Compute the distance from the point to every center and keep the smallest.</p>
+          <code class="eq">d(p, c) = &radic;[ (x<sub>p</sub> &minus; x<sub>c</sub>)&sup2; + (y<sub>p</sub> &minus; y<sub>c</sub>)&sup2; ]</code>
+          <p><strong>Example.</strong> Student A scored 58. The distances to 30, 61 and 92 are 28, 3 and 34, so A joins the center at 61.</p>
+        </li>
+        <li>
+          <h3>Move each center to the mean of its points</h3>
+          <p>Average each feature separately over the points in the cluster.</p>
+          <code class="eq">c<sub>j</sub> = (1 / n<sub>j</sub>) &Sigma;<sub>i in cluster j</sub> x<sub>i</sub></code>
+          <p><strong>Example.</strong> Students B, D, G and J scored 30, 32, 42 and 45. Their mean is 149 / 4 = 37.25, so that center moves to 37.25.</p>
+        </li>
+        <li>
+          <h3>Repeat until no point changes cluster</h3>
+          <p>Once memberships stop changing, the centers stop moving as well. In this example the final centers are 37.25, 59.33 and 89.33.</p>
+        </li>
+      </ol>
+
+      <h3 class="block-title">What K-Means minimizes</h3>
+      <p>The objective is <strong>inertia</strong>, also called the within-cluster sum of squares or SSE: the squared distance from each point to its own center, added over all points. Lower inertia means tighter clusters.</p>
+      <code class="eq">inertia = &Sigma;<sub>j</sub> &Sigma;<sub>i in cluster j</sub> &#8214;x<sub>i</sub> &minus; c<sub>j</sub>&#8214;&sup2;</code>
+      <p>Assignment cannot raise inertia, because each point moves only to a center at least as close. Update cannot raise it either, because the mean is the location with the smallest total squared distance to the cluster's points. There are finitely many possible groupings, so the algorithm must stop. It may stop at a <strong>local minimum</strong> rather than the best possible grouping, which is why the start matters.</p>
+
+      <h3 class="block-title">The same run in scikit-learn</h3>
+<pre class="code"><code>from sklearn.cluster import KMeans
+import numpy as np
+
+scores = np.array([58, 30, 59, 32, 61, 86, 42, 90, 92, 45]).reshape(-1, 1)
+start = np.array([[30], [61], [92]])
+
+model = KMeans(n_clusters=3, init=start, n_init=1).fit(scores)
+print(model.cluster_centers_.ravel())   # final centers
+print(model.labels_)                    # cluster of each student
+print(model.inertia_)                   # inertia</code></pre>
+      <p>By default, scikit-learn uses k-means++ and keeps the best of its runs. The fixed <code>init</code> above reproduces a single run from this lab.</p>
+    </section>
+
+    <section id="choosing-k" class="content">
+      <h2>Choosing K</h2>
+      <p class="lead" id="elbowLead"></p>
+      <div class="elbow-grid">
+        <div class="panel">
+          <h3>Inertia by number of clusters</h3>
+          <svg id="elbow" role="img" aria-label="Line chart of inertia for K from 1 to 6. The values are in the table beside it."></svg>
+        </div>
+        <div class="panel">
+          <h3>Values</h3>
+          <div class="table-wrap"><table id="elbowTable"><thead><tr><th>K</th><th>Inertia</th><th>Silhouette</th></tr></thead><tbody></tbody></table></div>
+          <p class="hint">Best of 50 k-means++ runs for each K. Silhouette is undefined at K = 1.</p>
+        </div>
+      </div>
+      <p><strong>Reading the figure.</strong> The best achievable inertia keeps falling as K grows, so the smallest inertia cannot select K. Look instead for the <strong>elbow</strong>, where additional clusters stop producing large reductions. The <strong>silhouette</strong> score compares how close each point is to its own cluster and to the nearest other cluster; values nearer 1 are better.</p>
+      <p id="elbowLive"></p>
+      <p><strong>Remark.</strong> These are guides only. The elbow can be ambiguous, and the most useful K also depends on what the clusters will be used for.</p>
+    </section>
+
+    <section id="limits" class="content">
+      <h2>When K-Means fits</h2>
+      <div class="fit-grid">
+        <div class="panel">
+          <h3>Suitable when</h3>
+          <ul>
+            <li>Features are numeric and on comparable scales</li>
+            <li>Clusters are compact and roughly round</li>
+            <li>Every observation should belong to a cluster</li>
+            <li>A fast method for large data is needed</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <h3>Use caution when</h3>
+          <ul>
+            <li>Outliers can pull a mean away from its group</li>
+            <li>Clusters are curved, nested or very unequal in size</li>
+            <li>Noise points should stay unassigned; DBSCAN allows this</li>
+            <li>The number of clusters is unknown and hard to judge</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>CIS 460 Machine Learning, Cleveland State University.</p>
+    <p>Adapted from <a href="https://github.com/Analytics6/k-means-visual-tutorial">K-means, made visual</a> by Analytics6, used under the <a href="LICENSE">MIT License</a>.</p>
+  </footer>
+
+  <div class="tip" id="tip" role="status" hidden></div>
+  <script src="kmeans.js"></script>
+  <script src="moons.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
